@@ -1,0 +1,8 @@
+# Local editor / agent config (never commit)
+.cursor/
+
+# Rust build output
+arbor/target/
+
+# OS
+.DS_Store

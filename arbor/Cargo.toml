@@ -1,0 +1,24 @@
+[package]
+name = "arbor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlparser = "0.43"
+arrow = { version = "51", features = ["prettyprint"] }
+parquet = { version = "51", features = ["arrow"] }
+thiserror = "1"
+# arrow-arith 51 conflicts with chrono 0.4.44+ (ambiguous `quarter` on Datelike)
+chrono = "=0.4.38"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+
+[[bench]]
+name = "tpch_q6"
+harness = false
+
+[[bench]]
+name = "tpch_q1"
+harness = false
