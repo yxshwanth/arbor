@@ -53,12 +53,12 @@ impl HashJoinExec {
         }
         let rschema = rbatches[0].schema();
         let r_all = concat_batches(&rschema, &rbatches).map_err(ArborError::from)?;
+        let right_keys = eval_join_keys(on.iter().map(|(_, rk)| rk), &r_all)?;
         let mut map: HashMap<Vec<ScalarValue>, Vec<u32>> = HashMap::new();
         for row in 0..r_all.num_rows() {
-            let mut key = Vec::new();
-            for (_, rk) in &on {
-                let c = evaluate_expr(rk, &r_all)?;
-                key.push(scalar_at_join(&c, row)?);
+            let mut key = Vec::with_capacity(right_keys.len());
+            for c in &right_keys {
+                key.push(scalar_at_join(c, row)?);
             }
             map.entry(key).or_default().push(row as u32);
         }
@@ -99,6 +99,14 @@ impl PhysicalPlan for HashJoinExec {
     }
 }
 
+/// Evaluates each join-key expression once over the full batch.
+fn eval_join_keys<'a, I>(keys: I, batch: &RecordBatch) -> Result<Vec<ArrayRef>>
+where
+    I: IntoIterator<Item = &'a crate::planner::Expr>,
+{
+    keys.into_iter().map(|k| evaluate_expr(k, batch)).collect()
+}
+
 fn scalar_at_join(arr: &ArrayRef, row: usize) -> Result<ScalarValue> {
     use arrow::array::{BooleanArray, Float64Array, Int64Array, StringArray};
     if !arr.is_valid(row) {
@@ -124,13 +132,13 @@ fn probe_inner(
     map: &HashMap<Vec<ScalarValue>, Vec<u32>>,
     out_schema: &SchemaRef,
 ) -> Result<Vec<RecordBatch>> {
+    let left_keys = eval_join_keys(on.iter().map(|(lk, _)| lk), l_all)?;
     let mut li: Vec<u32> = Vec::new();
     let mut rj: Vec<u32> = Vec::new();
     for row in 0..l_all.num_rows() {
-        let mut key = Vec::new();
-        for (lk, _) in on {
-            let c = evaluate_expr(lk, l_all)?;
-            key.push(scalar_at_join(&c, row)?);
+        let mut key = Vec::with_capacity(left_keys.len());
+        for c in &left_keys {
+            key.push(scalar_at_join(c, row)?);
         }
         if let Some(rows) = map.get(&key) {
             for &rr in rows {
