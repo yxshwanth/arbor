@@ -12,20 +12,21 @@ mod sort;
 pub use expr_eval::evaluate_expr;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 
 use crate::error::{ArborError, Result};
 use crate::optimizer::column_key;
-use crate::planner::LogicalPlan;
+use crate::planner::{Expr, LogicalPlan};
 
 pub use aggregate::HashAggregateExec;
 pub use filter_exec::FilterExec;
 pub use join::HashJoinExec;
 pub use limit_exec::LimitExec;
 pub use projection::ProjectionExec;
-pub use scan::ScanExec;
+pub use scan::{prune_row_groups, RowGroupPruneStats, ScanExec};
 pub use sort::SortExec;
 
 /// Standard batch size (rows) for readers and operators.
@@ -62,24 +63,24 @@ pub fn create_physical_plan(
             table_name,
             schema,
             projection,
-        } => {
-            let path: PathBuf = data_dir.join(format!("{table_name}.parquet"));
-            let logical_subset: crate::types::Schema = match projection {
-                None => schema.clone(),
-                Some(idxs) => crate::types::Schema {
-                    fields: idxs
-                        .iter()
-                        .filter_map(|&i| schema.fields.get(i).cloned())
-                        .collect(),
-                },
-            };
-            let file_schema: SchemaRef = std::sync::Arc::new(logical_subset.into());
-            ScanExec::new(path, file_schema, projection.clone(), BATCH_SIZE)
-        }
-        Filter { predicate, input } => {
-            let child = create_physical_plan(input, data_dir)?;
-            Ok(Box::new(FilterExec::new(child, predicate.clone())?))
-        }
+        } => scan_exec(data_dir, table_name, schema, projection, None),
+        Filter { predicate, input } => match input.as_ref() {
+            Scan {
+                table_name,
+                schema,
+                projection,
+            } => scan_exec(
+                data_dir,
+                table_name,
+                schema,
+                projection,
+                Some(predicate.clone()),
+            ),
+            _ => {
+                let child = create_physical_plan(input, data_dir)?;
+                Ok(Box::new(FilterExec::new(child, predicate.clone())?))
+            }
+        },
         Projection {
             exprs,
             schema,
@@ -123,6 +124,36 @@ pub fn create_physical_plan(
             Ok(Box::new(LimitExec::new(child, *n)))
         }
     }
+}
+
+/// Builds a [`ScanExec`], optionally fusing a filter predicate into the Parquet reader.
+fn scan_exec(
+    data_dir: &Path,
+    table_name: &str,
+    schema: &crate::types::Schema,
+    projection: &Option<Vec<usize>>,
+    predicate: Option<Expr>,
+) -> Result<Box<dyn PhysicalPlan>> {
+    let path: PathBuf = data_dir.join(format!("{table_name}.parquet"));
+    let logical_subset: crate::types::Schema = match projection {
+        None => schema.clone(),
+        Some(idxs) => crate::types::Schema {
+            fields: idxs
+                .iter()
+                .filter_map(|&i| schema.fields.get(i).cloned())
+                .collect(),
+        },
+    };
+    let output_schema: SchemaRef = Arc::new(logical_subset.into());
+    let full_logical: SchemaRef = Arc::new(schema.clone().into());
+    ScanExec::new(
+        path,
+        output_schema,
+        full_logical,
+        projection.clone(),
+        BATCH_SIZE,
+        predicate,
+    )
 }
 
 /// Resolves a logical column reference to a batch column index.
