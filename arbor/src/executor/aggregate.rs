@@ -206,43 +206,53 @@ fn build_grouped_batches(
 ) -> Result<Vec<RecordBatch>> {
     let schema = batches[0].schema();
     let all = concat_batches(&schema, batches).map_err(ArborError::from)?;
+    let group_cols: Vec<ArrayRef> = group_by
+        .iter()
+        .map(|g| evaluate_expr(g, &all))
+        .collect::<Result<_>>()?;
+    let mut agg_specs = Vec::with_capacity(aggr_exprs.len());
+    for e in aggr_exprs {
+        let func = agg_func(e)?;
+        let arg_e = agg_arg_expr(e)?;
+        let arg_col = if matches!(arg_e, Expr::Wildcard) {
+            None
+        } else {
+            Some(evaluate_expr(arg_e, &all)?)
+        };
+        agg_specs.push((func, arg_col));
+    }
     let mut map: HashMap<Vec<ScalarValue>, Vec<Acc>> = HashMap::new();
     let n = all.num_rows();
     for row in 0..n {
-        let mut key = Vec::new();
-        for g in group_by {
-            let col = evaluate_expr(g, &all)?;
-            key.push(scalar_at(&col, row)?);
+        let mut key = Vec::with_capacity(group_cols.len());
+        for c in &group_cols {
+            key.push(scalar_at(c, row)?);
         }
         use std::collections::hash_map::Entry;
         let entry = match map.entry(key) {
             Entry::Occupied(o) => o.into_mut(),
             Entry::Vacant(v) => {
-                let init: Vec<Acc> = aggr_exprs
+                let init: Vec<Acc> = agg_specs
                     .iter()
-                    .map(|e| {
-                        let func = agg_func(e)?;
-                        let arg_e = agg_arg_expr(e)?;
-                        let sample = if matches!(arg_e, Expr::Wildcard) {
-                            ScalarValue::Int64(0)
-                        } else {
-                            let c = evaluate_expr(arg_e, &all)?;
-                            scalar_at(&c, row)?
+                    .map(|(func, arg_col)| {
+                        let sample = match arg_col {
+                            None => ScalarValue::Int64(0),
+                            Some(c) => scalar_at(c, row)?,
                         };
-                        acc_for_func(func, &sample)
+                        acc_for_func(*func, &sample)
                     })
                     .collect::<Result<_>>()?;
                 v.insert(init)
             }
         };
-        for (i, ae) in aggr_exprs.iter().enumerate() {
-            let func = agg_func(ae)?;
-            let arg_e = agg_arg_expr(ae)?;
-            let val = if matches!(func, AggFunc::Count) && matches!(arg_e, Expr::Wildcard) {
+        for (i, (func, arg_col)) in agg_specs.iter().enumerate() {
+            let val = if matches!(func, AggFunc::Count) && arg_col.is_none() {
                 ScalarValue::Int64(1)
             } else {
-                let c = evaluate_expr(arg_e, &all)?;
-                scalar_at(&c, row)?
+                let c = arg_col.as_ref().ok_or_else(|| {
+                    ArborError::Execution("aggregate argument array missing".into())
+                })?;
+                scalar_at(c, row)?
             };
             entry[i].update(val)?;
         }
