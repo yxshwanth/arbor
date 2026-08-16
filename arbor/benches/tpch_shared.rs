@@ -9,6 +9,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use criterion::black_box;
 use parquet::arrow::ArrowWriter;
+use parquet::file::properties::WriterProperties;
 use std::fs::File;
 use std::sync::Arc;
 
@@ -22,8 +23,9 @@ use arbor::types::Catalog;
 /// Row count for Q6 (scan + filter + global aggregate); still ~1M-class but slightly below 1M for laptop runs.
 pub const ROWS_Q6: u64 = 900_000;
 
-/// Row count for Q1 (grouped aggregates + sort). Kept small so each run is ~1–3s on a laptop; Criterion still needs many iterations for stable stats.
-pub const ROWS_Q1: u64 = 5_000;
+/// Row count for Q1 (grouped aggregates + sort). Same scale as Q6 after hoisting
+/// per-row expression evaluation out of the hash-aggregate key path.
+pub const ROWS_Q1: u64 = 900_000;
 
 const BATCH_SIZE: usize = arbor::executor::BATCH_SIZE;
 
@@ -39,7 +41,10 @@ pub fn write_lineitem_parquet(path: &Path, total_rows: u64) -> std::io::Result<(
         Field::new("l_linestatus", DataType::Utf8, false),
     ]));
     let file = File::create(path)?;
-    let mut writer = ArrowWriter::try_new(file, schema.clone(), None)
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(BATCH_SIZE)
+        .build();
+    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     let mut written: u64 = 0;
@@ -62,7 +67,8 @@ pub fn write_lineitem_parquet(path: &Path, total_rows: u64) -> std::io::Result<(
             l_extendedprice.push(((u % 10000) + 1) as f64 * 0.01);
             l_discount.push(((u % 20) as f64) * 0.01);
             l_tax.push(((u % 15) as f64) * 0.01);
-            l_shipdate.push(5000 + (i64_i % 6000));
+            // Monotonic shipdate so row-group min/max can prune selective date predicates.
+            l_shipdate.push(5000 + ((written + i as u64) * 6000 / total_rows) as i64);
             l_returnflag.push(flags[(u % 3) as usize].to_string());
             l_linestatus.push(statuses[(u % 2) as usize].to_string());
         }
@@ -122,7 +128,7 @@ WHERE l_shipdate >= 8000 AND l_shipdate < 8600
   AND l_discount >= 0.05 AND l_discount <= 0.07
   AND l_quantity < 24.0"#;
 
-/// Q1-shaped grouped aggregates + filter + sort (uses `lineitem_q1` table; smaller Parquet than Q6).
+/// Q1-shaped grouped aggregates + filter + sort (uses `lineitem_q1` table).
 pub const SQL_Q1: &str = r#"SELECT l_returnflag, l_linestatus,
   SUM(l_quantity) AS sum_qty,
   SUM(l_extendedprice) AS sum_base_price,

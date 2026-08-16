@@ -1,6 +1,6 @@
-//! Q1-style benchmark: smaller `lineitem_q1` table, grouped aggregates + sort (optimizer on vs off).
+//! Q1-style benchmark: grouped aggregates + sort (optimizer on vs off).
 //!
-//! Lighter Criterion settings for laptops. Daily: `cargo bench --bench tpch_q1 -- --quick`
+//! Daily: `cargo bench --bench tpch_q1 -- --quick`
 
 #[path = "tpch_shared.rs"]
 mod shared;
