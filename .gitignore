@@ -5,5 +5,8 @@
 # Rust build output
 /target
 
+# leftover nested clone after flattening the crate to the repo root
+/arbor/
+
 # OS
 .DS_Store
