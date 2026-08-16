@@ -2,6 +2,10 @@
 name = "arbor"
 version = "0.1.0"
 edition = "2021"
+description = "Columnar SQL query engine over Apache Arrow and Parquet (no DataFusion)"
+license = "Apache-2.0"
+repository = "https://github.com/yxshwanth/arbor"
+readme = "README.md"
 
 [dependencies]
 sqlparser = "0.43"
